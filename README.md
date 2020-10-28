@@ -1,5 +1,5 @@
 # mqtt_blindcontroller
-Powerful MQTT Blind Controller
+A powerful blind controller that uses the MQTT to connect to Apple Homekit via Homebridge.
 
 You will find a full guide here:
 https://www.hackster.io/mkey05/powerful-mqtt-blind-controller-d5df5d
