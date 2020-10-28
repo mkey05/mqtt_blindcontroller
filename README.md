@@ -1,6 +1,8 @@
 # mqtt_blindcontroller
 Powerful MQTT Blind Controller
 
+https://www.hackster.io/mkey05/powerful-mqtt-blind-controller-d5df5d
+
 Before uploading the code make sure to enter the MQTT credentials (MQTT server, user, password) in Arduino IDE. I had to use the ESP8266 library version 2.42 as the latest version gave me issues. All the other libraries needed are the following and the most recent should work:
 
 Encoder
