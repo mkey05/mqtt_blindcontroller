@@ -5,6 +5,7 @@
 #include <WiFiManager.h>
 #include <ESP8266HTTPUpdateServer.h>
 #include <ESP_EEPROM.h>
+#include <ESP8266mDNS.h>
 
 #define DEBUG        1
 
