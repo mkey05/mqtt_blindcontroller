@@ -7,12 +7,15 @@
 #include <ESP_EEPROM.h>
 #include <ESP8266mDNS.h>
 
-#define DEBUG        1
+#define DEBUG 0
+#define CONTACT 0
 
-#define STATUSLED  D3
+#define STATUSLED D3
 #define LONGPRESSTIME 1000
 #define UPBUTTONPIN D8
 #define DOWNBUTTONPIN D7
+#define CONTACTSENSOR A0
+#define LEDPIN D4
 #define FINETOLERANCE 1200
 #define MQTTUPDATE 30000
 #define ERRORCHECK 1000
@@ -22,19 +25,29 @@
 #define LEDBRIGHTNESS 64
 #define MINSPEED 800
 #define MAXSPEED 1023
+#define RESTARTTIMER 172800000  //48h
 
 //USE ESP8266 Boards library V2.42
 //UP + DOWN BUTTON = Reset All
 //UP BUTTON Ignore EEPROM values
 //DOWN BUTTON Reset EEPROM
 
-#define ENCODERWIRE 0
+//myBlind1 = 1,1
+//myBlind2 = 1,0
+//myBlind3 = 1,0
+//myBlind4 = 1,1
+//myBlind5 = 0,0
+//myBlind6 = 1,0
+//myBlind7 = 1,1
+//myBlind8 = 1,0
+
+#define ENCODERWIRE 1
 #define MOTORWIRE 1
 
 #define mqtt_server "xxx.xxx.xxx.xxx"
 const char* mqtt_user = "xxx";
 const char* mqtt_pass = "xxx";
-const char* host = "myblind";
+const char* host = "myblind1";
 const char* update_path = "/firmware";
 const char* update_username = host;
 const char* update_password = "local";
@@ -47,8 +60,9 @@ char blindstate[16];
 char blindposition[10];
 char getTarget[10];
 char error[2];
+char cs[2];
 
-String blind_target_topic, blind_position_topic, blind_state_topic, blind_gettarget_topic, blind_error_topic;
+String blind_target_topic, blind_position_topic, blind_state_topic, blind_gettarget_topic, blind_error_topic, blind_contactsensor_topic;
 
 //Setup the web server for http OTA updates.
 ESP8266WebServer httpServer(80);
@@ -78,7 +92,6 @@ long reconnectwait = 0 - RECONNECTTIME;
 long lastReconnectAttempt = 0;
 long now = 0;
 long lastMQTTLoop = 0;
-const int ledPin = D4;
 unsigned long previousMillis = 0;
 long buttonTimer = 0;
 boolean DownButtonActive = false;
@@ -87,16 +100,19 @@ boolean UpButtonActive = false;
 boolean UpLongPressActive = false;
 boolean setTarget = false;
 
+int contactSensorValue;
+boolean contactSensorState, contactSensorState_1;
+
 int closedPosition;
 int openPosition;
 int currentPosition;
 int targetPosition;
 int travelLength;
 int travelPercent, targetPercent;
-int status; //4 is open, 3, opening, 2 stopped, 1 is closing, 0 is closed
+int status;  //4 is open, 3, opening, 2 stopped, 1 is closing, 0 is closed
 int switchPosition;
 int acceleration;
-int motorspeed;
+int motorspeed = 0;
 
 //Safety cut off variables
 long movementStartTimer;
@@ -115,11 +131,10 @@ String getMqttTopic(String type) {
   return String(host) + "/" + type;
 }
 
-void callback(char* topic, byte * payload, unsigned int length) {
+void callback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0';
   strTopic = String((char*)topic);
-  if (strTopic == blind_target_topic)
-  {
+  if (strTopic == blind_target_topic) {
     switch1 = String((char*)payload);
     switchPosition = switch1.toInt();
     target();
@@ -131,11 +146,11 @@ void debug() {
   Serial.print("Status: ");
   Serial.print(status);
   Serial.print(" | ");
-  if (status == 4) Serial.print("Open");
+  if (status == 4) Serial.print("Open   ");
   else if (status == 3) Serial.print("Opening");
   else if (status == 2) Serial.print("Stopped");
   else if (status == 1) Serial.print("Closing");
-  else if (status == 0) Serial.print("Closed");
+  else if (status == 0) Serial.print("Closed ");
   Serial.print(" | ");
   Serial.print("Pos: ");
   Serial.print(currentPosition);
@@ -156,30 +171,34 @@ void debug() {
   Serial.print(motorspeed);
   Serial.print(" | ");
   Serial.print("Err: ");
-  Serial.println(errorFlag);
+  Serial.print(errorFlag);
+  Serial.print(" | ");
+  Serial.print("CS: ");
+  Serial.print(contactSensorValue);
+  Serial.print(" - ");
+  Serial.println(contactSensorState);
 }
 #endif
 
-void flash_LED(int noTimes, String LEDcolor)
-{
+void flash_LED(int noTimes, String LEDcolor) {
   int x = 0;
   while (x <= noTimes - 1) {
     if (LEDcolor == "Yellow") {
-      pixels.setPixelColor(0, 255, 165, 0); //yellow
+      pixels.setPixelColor(0, 255, 165, 0);  //yellow
     } else if (LEDcolor == "Red") {
-      pixels.setPixelColor(0, 255, 0, 0); //red
+      pixels.setPixelColor(0, 255, 0, 0);  //red
     } else if (LEDcolor == "Green") {
-      pixels.setPixelColor(0, 0, 255, 0); //green
+      pixels.setPixelColor(0, 0, 255, 0);  //green
     } else if (LEDcolor == "Blue") {
-      pixels.setPixelColor(0, 0, 100, 255); //blue
+      pixels.setPixelColor(0, 0, 100, 255);  //blue
     } else if (LEDcolor == "Pink") {
-      pixels.setPixelColor(0, 255, 0, 165); //pink
+      pixels.setPixelColor(0, 255, 0, 165);  //pink
     } else if (LEDcolor == "Purple") {
-      pixels.setPixelColor(0, 165, 0, 255); //purple
+      pixels.setPixelColor(0, 165, 0, 255);  //purple
     } else if (LEDcolor == "Cyan") {
-      pixels.setPixelColor(0, 0, 255, 255); //cyan
+      pixels.setPixelColor(0, 0, 255, 255);  //cyan
     } else if (LEDcolor == "Orange") {
-      pixels.setPixelColor(0, 255, 40, 0); // orange
+      pixels.setPixelColor(0, 255, 40, 0);  // orange
     } else {
       pixels.setPixelColor(0, 204, 0, 204);
     }
@@ -202,9 +221,10 @@ void whileloop() {
 #endif
   }
   acceleration++;
-  if (acceleration < MAXSPEED) motorspeed = acceleration; else motorspeed = MAXSPEED, acceleration = MAXSPEED;
+  if (acceleration < MAXSPEED) motorspeed = acceleration;
+  else motorspeed = MAXSPEED, acceleration = MAXSPEED;
   currentPosition = myEnc.read();
-  currentPosition =  currentPosition;
+  //currentPosition = currentPosition;
   travelPercent = 100 - (abs(openPosition - currentPosition) * 100 / travelLength);
   if (travelPercent > 100) travelPercent = 100;
   if (travelPercent < 0) travelPercent = 0;
@@ -215,7 +235,7 @@ void whileloop() {
 }
 
 void resetAll() {
-  for (unsigned int i = 0 ; i < EEPROM.length() ; i++) {
+  for (unsigned int i = 0; i < EEPROM.length(); i++) {
     EEPROM.write(i, 0);
   }
   wifiManager.resetSettings();
@@ -231,43 +251,66 @@ void resetAll() {
   pixels.show();
 }
 
+void sendMQTTMessageLite() {
+  itoa(contactSensorState, cs, 2);
+  itoa(errorFlag, error, 2);
+  client.publish(blind_error_topic.c_str(), error);
+  client.publish(blind_contactsensor_topic.c_str(), cs);
+#if DEBUG
+  Serial.print(blind_contactsensor_topic);
+  Serial.print(" ");
+  Serial.print(cs);
+  Serial.print(" | ");
+  Serial.print(blind_error_topic);
+  Serial.print(" ");
+  Serial.println(error);
+#endif
+  lastMsg = millis();
+}
 
 void sendMQTTMessage() {
   itoa(errorFlag, error, 2);
+  itoa(contactSensorState, cs, 2);
   itoa(switchPosition, getTarget, 10);
 
-  if (status == 4) snprintf (blindstate, 8, "STOPPED"), itoa(100, blindposition, 10);
-  else if (status == 3) snprintf (blindstate, 11, "INCREASING"), itoa(travelPercent, blindposition, 10);
-  else if (status == 2) snprintf (blindstate, 8, "STOPPED"), itoa(travelPercent, blindposition, 10);
-  else if (status == 1) snprintf (blindstate, 11, "DECREASING"), itoa(travelPercent, blindposition, 10);
-  else if (status == 0) snprintf (blindstate, 8, "STOPPED"), itoa(0, blindposition, 10);
+  if (status == 4) snprintf(blindstate, 8, "STOPPED"), itoa(100, blindposition, 10);
+  else if (status == 3) snprintf(blindstate, 11, "INCREASING"), itoa(travelPercent, blindposition, 10);
+  else if (status == 2) snprintf(blindstate, 8, "STOPPED"), itoa(travelPercent, blindposition, 10);
+  else if (status == 1) snprintf(blindstate, 11, "DECREASING"), itoa(travelPercent, blindposition, 10);
+  else if (status == 0) snprintf(blindstate, 8, "STOPPED"), itoa(0, blindposition, 10);
 
   client.publish(blind_error_topic.c_str(), error);
   client.publish(blind_gettarget_topic.c_str(), getTarget);
   client.publish(blind_state_topic.c_str(), blindstate);
   client.publish(blind_position_topic.c_str(), blindposition);
-  //if (status == 1 or status == 2 or status ==  3) client.publish(blind_state_topic.c_str(), blindstate);
+  client.publish(blind_contactsensor_topic.c_str(), cs);
 
 #if DEBUG
+  Serial.print(blind_error_topic);
+  Serial.print(" ");
+  Serial.print(error);
+  Serial.print(" | ");
   Serial.print(blind_position_topic);
-  Serial.print(" - ");
+  Serial.print(" ");
   Serial.print(blindposition);
   Serial.print(" | ");
   Serial.print(blind_state_topic);
-  Serial.print(" - ");
+  Serial.print(" ");
   Serial.print(blindstate);
   Serial.print(" | ");
   Serial.print("Set: ");
   Serial.print(blind_target_topic);
-  Serial.print(" - ");
-  Serial.println(switchPosition);
+  Serial.print(" ");
+  Serial.print(switchPosition);
+  Serial.print(" | ");
+  Serial.print(blind_contactsensor_topic);
+  Serial.print(" ");
+  Serial.println(cs);
 #endif
-
   lastMsg = millis();
 }
 
-void target()
-{
+void target() {
   acceleration = MINSPEED;
   travelLength = abs(openPosition - closedPosition);
   targetPercent = 100 - switchPosition;
@@ -279,9 +322,13 @@ void target()
   errorFlag = false;
   stopFlag = false;
 
-  ///DOWN
+///DOWN
+#if CONTACT
+  if ((currentPosition > targetPosition) && abs(currentPosition - targetPosition) > FINETOLERANCE && contactSensorState != 1) {
+#else
   if ((currentPosition > targetPosition) && abs(currentPosition - targetPosition) > FINETOLERANCE) {
-    pixels.setPixelColor(0, 255, 165, 0); //yellow
+#endif
+    pixels.setPixelColor(0, 255, 165, 0);  //yellow
     pixels.show();
     status = 1;
     sendMQTTMessage();
@@ -310,9 +357,13 @@ void target()
     }
   }
 
-  /// UP
+/// UP
+#if CONTACT
+  if ((currentPosition < targetPosition) && abs(currentPosition - targetPosition) > FINETOLERANCE && contactSensorState != 1) {
+#else
   if ((currentPosition < targetPosition) && abs(currentPosition - targetPosition) > FINETOLERANCE) {
-    pixels.setPixelColor(0, 0, 100, 255); //blue
+#endif
+    pixels.setPixelColor(0, 0, 100, 255);  //blue
     pixels.show();
     status = 3;
     sendMQTTMessage();
@@ -342,6 +393,7 @@ void target()
   }
 
   acceleration = MINSPEED;
+  motorspeed = 0;
   digitalWrite(E1, LOW);
   digitalWrite(M1, LOW);
   delay(UPDATEPOSTIONDELAY);
@@ -392,7 +444,7 @@ void downButtonCheck() {
       DownButtonActive = true;
       buttonTimer = millis();
     }
-    if ((millis() - buttonTimer > LONGPRESSTIME) && (DownLongPressActive == false)) { // Button Held
+    if ((millis() - buttonTimer > LONGPRESSTIME) && (DownLongPressActive == false)) {  // Button Held
       DownLongPressActive = true;
       status = 1;
       sendMQTTMessage();
@@ -401,7 +453,7 @@ void downButtonCheck() {
         whileloop();
         analogWrite(M1, motorspeed);
         digitalWrite(E1, LOW);
-        pixels.setPixelColor(0, 255, 165, 0); //yellow
+        pixels.setPixelColor(0, 255, 165, 0);  //yellow
         pixels.show();
         currentPosition = myEnc.read();
       }
@@ -419,6 +471,7 @@ void downButtonCheck() {
 #if DEBUG
         Serial.println("Released Button!");
 #endif
+        motorspeed = 0;
         digitalWrite(E1, LOW);
         digitalWrite(M1, LOW);
         delay(UPDATEPOSTIONDELAY);
@@ -438,8 +491,7 @@ void downButtonCheck() {
           flash_LED(3, String("Yellow"));
           flash_LED(1, String("Purple"));
           sendMQTTMessage();
-        }
-        else {
+        } else {
           pixels.setPixelColor(0, 0, 0, 0);
           pixels.show();
           switchPosition = travelPercent;
@@ -469,7 +521,7 @@ void upButtonCheck() {
         whileloop();
         analogWrite(E1, motorspeed);
         digitalWrite(M1, LOW);
-        pixels.setPixelColor(0, 0, 100, 255); //blue
+        pixels.setPixelColor(0, 0, 100, 255);  //blue
         pixels.show();
         currentPosition = myEnc.read();
       }
@@ -487,6 +539,7 @@ void upButtonCheck() {
 #if DEBUG
         Serial.println("Released Button!");
 #endif
+        motorspeed = 0;
         digitalWrite(E1, LOW);
         digitalWrite(M1, LOW);
         delay(UPDATEPOSTIONDELAY);
@@ -506,8 +559,7 @@ void upButtonCheck() {
           flash_LED(3, String("Blue"));
           flash_LED(1, String("Purple"));
           sendMQTTMessage();
-        }
-        else {
+        } else {
           pixels.setPixelColor(0, 0, 0, 0);
           pixels.show();
           switchPosition = travelPercent;
@@ -519,6 +571,17 @@ void upButtonCheck() {
       }
       UpButtonActive = false;
     }
+  }
+}
+
+void checkContactSensor() {
+  contactSensorValue = analogRead(CONTACTSENSOR);
+  delay(3);
+  if (contactSensorValue == 1024) contactSensorState = 0, digitalWrite(LEDPIN, LOW);  // Wemos BUILTIN_LED is active Low, so high is off;
+  else contactSensorState = 1, digitalWrite(LEDPIN, HIGH);
+  if (contactSensorState != contactSensorState_1) {
+    contactSensorState_1 = contactSensorState;
+    sendMQTTMessageLite();
   }
 }
 
@@ -536,16 +599,16 @@ boolean reconnect() {
   return client.connected();
 }
 
-void setup()
-{
+void setup() {
 #if DEBUG
   Serial.begin(115200);
 #endif
   pinMode(UPBUTTONPIN, INPUT);
   pinMode(DOWNBUTTONPIN, INPUT);
-  pixels.begin(); // This initializes the NeoPixel library.
+  pinMode(LEDPIN, OUTPUT);  // initialize digital LEDPIN as an output.
+  pixels.begin();           // This initializes the NeoPixel library.
   pixels.setBrightness(LEDBRIGHTNESS);
-  pixels.setPixelColor(0, 255, 0, 0); //red
+  pixels.setPixelColor(0, 255, 0, 0);  //red
   pixels.show();
   delay(4000);
 
@@ -563,51 +626,53 @@ void setup()
 
 #if DEBUG
   Serial.println("Starting...");
-  Serial.println("Blind Controller v3.5");
+  Serial.println("Blind Controller v3.6");
   Serial.println("UP + DOWN BUTTON  = Reset All");
   Serial.println("UP BUTTON         = EEPROM Ignore");
   Serial.println("DOWN BUTTON       = EEPROM Reset");
 #endif
 
-  pixels.setPixelColor(0, 255, 40, 0); // orange
+  pixels.setPixelColor(0, 255, 40, 0);  // orange
   pixels.show();
   lastReconnectAttempt = 0;
+
+  checkContactSensor();
 
   blind_target_topic = getMqttTopic("setTargetPosition");
   blind_position_topic = getMqttTopic("getCurrentPosition");
   blind_state_topic = getMqttTopic("getPositionState");
   blind_gettarget_topic = getMqttTopic("getTargetPosition");
   blind_error_topic = getMqttTopic("getObstructionDetected");
+  blind_contactsensor_topic = getMqttTopic("getContactSensorState");
 
   wifiManager.setConfigPortalTimeout(180);
   wifiManager.autoConnect(host);
 
   client.setServer(mqtt_server, 1883);
-  client.setCallback(callback); //callback is the function that gets called for a topic sub
+  client.setCallback(callback);  //callback is the function that gets called for a topic sub
   delay(100);
 
-    if (!MDNS.begin(host)) {
-      Serial.println("Error setting up MDNS responder!");
-      while (1) {
-        delay(1000);
-      }
+  if (!MDNS.begin(host)) {
+    Serial.println("Error setting up MDNS responder!");
+    while (1) {
+      delay(1000);
     }
-    Serial.println("mDNS responder started");
+  }
+  Serial.println("mDNS responder started");
 
   httpUpdater.setup(&httpServer, update_path, update_username, update_password);
 
   httpServer.begin();
 
-    MDNS.addService("http", "tcp", 80);
+  MDNS.addService("http", "tcp", 80);
 #if DEBUG
   char buf[16];
-  sprintf(buf, "%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
+  sprintf(buf, "%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3]);
 
   Serial.printf("HTTPUpdateServer ready! Open http://%s%s in your browser and login with username '%s' and your password\n", buf, update_path, update_username);
 #endif
-  pinMode(ledPin, OUTPUT); // initialize digital ledPin as an output.
   delay(10);
-  digitalWrite(ledPin, HIGH); // Wemos BUILTIN_LED is active Low, so high is off
+  digitalWrite(LEDPIN, HIGH);  // Wemos BUILTIN_LED is active Low, so high is off
 #if DEBUG
   Serial.print("Read EEPROM...");
 #endif
@@ -619,8 +684,7 @@ void setup()
 #if DEBUG
     Serial.println("Ignored!");
 #endif
-  }
-  else if (digitalRead(DOWNBUTTONPIN) == HIGH and digitalRead(UPBUTTONPIN) == LOW) {
+  } else if (digitalRead(DOWNBUTTONPIN) == HIGH and digitalRead(UPBUTTONPIN) == LOW) {
     closedPosition = 0;
     openPosition = 2000;
     currentPosition = 1000;
@@ -637,8 +701,7 @@ void setup()
 #if DEBUG
     Serial.println("Reset!");
 #endif
-  }
-  else {
+  } else {
     EEPROM.get(addrclosedPosition, closedPosition);
     EEPROM.get(addropenPosition, openPosition);
     EEPROM.get(addrcurrentPosition, currentPosition);
@@ -664,7 +727,6 @@ void setup()
   if (travelPercent > 100) travelPercent = 100;
   if (travelPercent < 0) travelPercent = 0;
   acceleration = MINSPEED;
-  motorspeed = acceleration;
   switchPosition = travelPercent;
   delay(100);
   pixels.setPixelColor(0, 0, 0, 0);
@@ -674,10 +736,9 @@ void setup()
 #endif
 }
 
-void loop()
-{
+void loop() {
   if (!client.connected()) {
-    pixels.setPixelColor(0, 255, 40, 0); // orange
+    pixels.setPixelColor(0, 255, 40, 0);  // orange
     downButtonCheck();
     upButtonCheck();
     now = millis();
@@ -688,10 +749,12 @@ void loop()
       }
     }
   } else {
+    checkContactSensor();
     downButtonCheck();
     upButtonCheck();
-    if (millis() - lastMsg > MQTTUPDATE) sendMQTTMessage();
+    if (millis() - lastMsg > MQTTUPDATE) sendMQTTMessageLite();
     client.loop();
-    httpServer.handleClient(); //handles requests for the firmware update page
+    httpServer.handleClient();  //handles requests for the firmware update page
   }
+  if (millis() > RESTARTTIMER & motorspeed == 0) ESP.restart();
 }
